@@ -1,3 +1,4 @@
+import { ImageNormalizationModule } from '../product-image/image-normalization.module';
 import { Module } from '@nestjs/common';
 import { OcrService } from './ocr.service';
 import { OcrController } from './ocr.controller';
@@ -5,7 +6,7 @@ import { AiDescriptionModule } from '../ai-description/ai-description.module';
 import { ProductsModule } from '../products/products.module';
 
 @Module({
-  imports: [AiDescriptionModule, ProductsModule],
+  imports: [AiDescriptionModule, ProductsModule, ImageNormalizationModule],
 
   providers: [OcrService],
   controllers: [OcrController],

@@ -1,3 +1,4 @@
+import { ImageNormalizationModule } from './image-normalization.module';
 import { Module } from '@nestjs/common';
 import { ProductImageService } from './product-image.service';
 import { ProductImageResolver } from './product-image.resolver';
@@ -6,7 +7,7 @@ import { ProductsModule } from 'src/products/products.module';
 import { HttpModule } from '@nestjs/axios';
 
 @Module({
-  imports: [ProductsModule, HttpModule],
+  imports: [ProductsModule, HttpModule, ImageNormalizationModule],
   providers: [ProductImageService, ProductImageResolver],
   controllers: [ProductImageController],
 })

@@ -1,10 +1,17 @@
+import {
+  ImageNormalizationService,
+  NormalizedImage,
+} from './image-normalization.service';
+import { finished } from 'stream/promises';
+import { randomUUID } from 'crypto';
+import { cleanupUpload } from './upload-cleanup.util';
 import { Injectable } from '@nestjs/common';
 import { ProcessImageInput } from './dto/process-image.input';
 import { ProcessImageOutput } from './dto/process-image.output';
 import { ProductsService } from '../products/products.service';
 import { HttpService } from '@nestjs/axios';
 import { ConfigService } from '@nestjs/config';
-import FormData = require('form-data');
+import FormData from 'form-data';
 import * as path from 'path';
 import * as fs from 'fs';
 
@@ -14,23 +21,21 @@ export class ProductImageService {
     private readonly productsService: ProductsService,
     private readonly httpService: HttpService,
     private readonly configService: ConfigService,
+    private readonly normalization: ImageNormalizationService,
   ) {}
 
   async removeBackground(
     input: ProcessImageInput,
+    memberId: string,
   ): Promise<ProcessImageOutput> {
     const { productId, image } = input;
 
-    await this.productsService.updateOriginalImage(productId, image);
+    await this.productsService.updateOriginalImage(productId, memberId, image);
 
     return {
       image,
       message: 'Image received and saved to product successfully',
     };
-  }
-
-  async saveOriginalImage(productId: string, imagePath: string) {
-    return this.productsService.updateOriginalImage(productId, imagePath);
   }
 
   async createFinalEditedImage(imagePath: string): Promise<Buffer> {
@@ -42,7 +47,8 @@ export class ProductImageService {
 
     const form = new FormData();
 
-    form.append('imageFile', fs.createReadStream(imagePath));
+    const imageStream = fs.createReadStream(imagePath);
+    form.append('imageFile', imageStream);
 
     form.append('removeBackground', 'true');
 
@@ -54,41 +60,68 @@ export class ProductImageService {
     form.append('padding', '0.15');
     form.append('shadow.mode', 'ai.soft');
 
-    const response = await this.httpService.axiosRef.post(
-      'https://image-api.photoroom.com/v2/edit',
-      form,
-      {
-        headers: {
-          ...form.getHeaders(),
-          'x-api-key': apiKey,
-          'pr-ai-background-model-version': 'background-studio-beta-2025-03-17',
+    try {
+      const response = await this.httpService.axiosRef.post(
+        'https://image-api.photoroom.com/v2/edit',
+        form,
+        {
+          headers: {
+            ...form.getHeaders(),
+            'x-api-key': apiKey,
+            'pr-ai-background-model-version':
+              'background-studio-beta-2025-03-17',
+          },
+          responseType: 'arraybuffer',
         },
-        responseType: 'arraybuffer',
-      },
-    );
+      );
 
-    return Buffer.from(response.data);
+      return Buffer.from(response.data);
+    } finally {
+      imageStream.destroy();
+      await finished(imageStream).catch(() => undefined);
+    }
   }
 
-  async saveFinalEditedImage(
+  async processUpload(
     productId: string,
-    imageBuffer: Buffer,
-  ): Promise<string> {
-    const outputDir = path.join(process.cwd(), 'uploads', 'products', 'final');
-
-    if (!fs.existsSync(outputDir)) {
-      fs.mkdirSync(outputDir, { recursive: true });
+    memberId: string,
+    uploadPath: string,
+  ): Promise<{ originalImage: string; finalEditedImage: string }> {
+    await this.productsService.requireOwnedProduct(productId, memberId);
+    let normalized: NormalizedImage | undefined;
+    let originalPath: string | undefined;
+    let finalPath: string | undefined;
+    let saved = false;
+    try {
+      normalized = await this.normalization.normalize(uploadPath, 'product');
+      const imageBuffer = await this.createFinalEditedImage(normalized.path);
+      const originalDir = path.join('uploads', 'products', 'original');
+      const finalDir = path.join('uploads', 'products', 'final');
+      await Promise.all([
+        fs.promises.mkdir(originalDir, { recursive: true }),
+        fs.promises.mkdir(finalDir, { recursive: true }),
+      ]);
+      originalPath = path.join(
+        originalDir,
+        `${randomUUID()}.${normalized.format === 'jpeg' ? 'jpg' : 'png'}`,
+      );
+      finalPath = path.join(finalDir, `${randomUUID()}.png`);
+      await fs.promises.copyFile(normalized.path, originalPath);
+      await fs.promises.writeFile(finalPath, imageBuffer);
+      await this.productsService.updateProcessedImages(
+        productId,
+        memberId,
+        originalPath,
+        finalPath,
+      );
+      saved = true;
+      return { originalImage: originalPath, finalEditedImage: finalPath };
+    } finally {
+      if (normalized) await cleanupUpload(normalized.path);
+      if (!saved) {
+        if (originalPath) await cleanupUpload(originalPath);
+        if (finalPath) await cleanupUpload(finalPath);
+      }
     }
-
-    const filename = `${Date.now()}-${productId}.png`;
-    const outputPath = path.join(outputDir, filename);
-
-    fs.writeFileSync(outputPath, imageBuffer);
-
-    const imagePath = `uploads/products/final/${filename}`;
-
-    await this.productsService.updateFinalEditedImage(productId, imagePath);
-
-    return imagePath;
   }
 }

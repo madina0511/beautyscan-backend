@@ -1,7 +1,11 @@
-import { Injectable } from '@nestjs/common';
+import {
+  BadRequestException,
+  Injectable,
+  NotFoundException,
+  UnauthorizedException,
+} from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
-import { Model } from 'mongoose';
-
+import { Model, UpdateQuery } from 'mongoose';
 import { Product, ProductDocument } from './product.schema';
 
 @Injectable()
@@ -11,55 +15,100 @@ export class ProductsService {
     private readonly productModel: Model<ProductDocument>,
   ) {}
 
-  async create(name: string, ownerId: string): Promise<ProductDocument> {
-    const product = new this.productModel({
-      name,
-      ownerId,
-    });
-
-    return product.save();
+  private validateMemberId(memberId: string): void {
+    if (typeof memberId !== 'string' || !/^[a-f0-9]{24}$/i.test(memberId)) {
+      throw new UnauthorizedException();
+    }
   }
 
-  async findByOwner(ownerId: string): Promise<ProductDocument[]> {
-    return this.productModel.find({ ownerId }).sort({ createdAt: -1 }).exec();
+  private ownershipFilter(
+    productId: string,
+    memberId: string,
+  ): { _id: string; ownerId: string } {
+    this.validateMemberId(memberId);
+    if (typeof productId !== 'string' || !/^[a-f0-9]{24}$/i.test(productId)) {
+      throw new BadRequestException('Invalid product ID');
+    }
+    return { _id: productId, ownerId: memberId };
+  }
+
+  async create(name: string, memberId: string): Promise<ProductDocument> {
+    this.validateMemberId(memberId);
+    return new this.productModel({ name, ownerId: memberId }).save();
+  }
+
+  async findByOwner(memberId: string): Promise<ProductDocument[]> {
+    this.validateMemberId(memberId);
+    return this.productModel
+      .find({ ownerId: memberId })
+      .sort({ createdAt: -1 })
+      .exec();
+  }
+
+  async requireOwnedProduct(
+    productId: string,
+    memberId: string,
+  ): Promise<ProductDocument> {
+    const product = await this.productModel
+      .findOne(this.ownershipFilter(productId, memberId))
+      .exec();
+    if (!product) throw new NotFoundException('Product not found');
+    return product;
+  }
+
+  private async updateOwned(
+    productId: string,
+    memberId: string,
+    update: UpdateQuery<ProductDocument>,
+  ): Promise<ProductDocument> {
+    const product = await this.productModel
+      .findOneAndUpdate(this.ownershipFilter(productId, memberId), update, {
+        new: true,
+      })
+      .exec();
+    if (!product) throw new NotFoundException('Product not found');
+    return product;
   }
 
   async updateOriginalImage(
     productId: string,
+    memberId: string,
     imageUrl: string,
-  ): Promise<ProductDocument | null> {
-    return this.productModel
-      .findByIdAndUpdate(productId, { originalImage: imageUrl }, { new: true })
-      .exec();
+  ): Promise<ProductDocument> {
+    return this.updateOwned(productId, memberId, {
+      $set: { originalImage: imageUrl },
+    });
   }
 
   async updateFinalEditedImage(
     productId: string,
+    memberId: string,
     imageUrl: string,
-  ): Promise<ProductDocument | null> {
-    return this.productModel
-      .findByIdAndUpdate(
-        productId,
-        { finalEditedImage: imageUrl },
-        { new: true },
-      )
-      .exec();
+  ): Promise<ProductDocument> {
+    return this.updateOwned(productId, memberId, {
+      $set: { finalEditedImage: imageUrl },
+    });
   }
+
+  async updateProcessedImages(
+    productId: string,
+    memberId: string,
+    originalImage: string,
+    finalEditedImage: string,
+  ): Promise<ProductDocument> {
+    return this.updateOwned(productId, memberId, {
+      $set: { originalImage, finalEditedImage },
+    });
+  }
+
   async updateDescription(
     productId: string,
+    memberId: string,
     language: 'uz' | 'en' | 'ru' | 'ko',
     description: string,
-  ) {
-    return this.productModel
-      .findByIdAndUpdate(
-        productId,
-        {
-          $set: {
-            [`descriptions.${language}`]: description,
-          },
-        },
-        { new: true },
-      )
-      .exec();
+  ): Promise<ProductDocument> {
+    return this.updateOwned(productId, memberId, {
+      $set: { [`descriptions.${language}`]: description },
+    });
   }
 }
