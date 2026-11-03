@@ -1,99 +1,80 @@
-<p align="center">
-  <a href="http://nestjs.com/" target="blank"><img src="https://nestjs.com/img/logo-small.svg" width="120" alt="Nest Logo" /></a>
-</p>
+# BeautyScan AI Backend
 
-[circleci-image]: https://img.shields.io/circleci/build/github/nestjs/nest/master?token=abc123def456
-[circleci-url]: https://circleci.com/gh/nestjs/nest
+![NestJS](https://img.shields.io/badge/NestJS-10-E0234E?logo=nestjs&logoColor=white)
+![TypeScript](https://img.shields.io/badge/TypeScript-5-3178C6?logo=typescript&logoColor=white)
+![MongoDB](https://img.shields.io/badge/MongoDB-Mongoose-47A248?logo=mongodb&logoColor=white)
+![Node.js](https://img.shields.io/badge/Node.js-24_LTS-339933?logo=nodedotjs&logoColor=white)
 
-  <p align="center">A progressive <a href="http://nodejs.org" target="_blank">Node.js</a> framework for building efficient and scalable server-side applications.</p>
-    <p align="center">
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/v/@nestjs/core.svg" alt="NPM Version" /></a>
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/l/@nestjs/core.svg" alt="Package License" /></a>
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/dm/@nestjs/common.svg" alt="NPM Downloads" /></a>
-<a href="https://circleci.com/gh/nestjs/nest" target="_blank"><img src="https://img.shields.io/circleci/build/github/nestjs/nest/master" alt="CircleCI" /></a>
-<a href="https://coveralls.io/github/nestjs/nest?branch=master" target="_blank"><img src="https://coveralls.io/repos/github/nestjs/nest/badge.svg?branch=master#9" alt="Coverage" /></a>
-<a href="https://discord.gg/G7Qnnhy" target="_blank"><img src="https://img.shields.io/badge/discord-online-brightgreen.svg" alt="Discord"/></a>
-<a href="https://opencollective.com/nest#backer" target="_blank"><img src="https://opencollective.com/nest/backers/badge.svg" alt="Backers on Open Collective" /></a>
-<a href="https://opencollective.com/nest#sponsor" target="_blank"><img src="https://opencollective.com/nest/sponsors/badge.svg" alt="Sponsors on Open Collective" /></a>
-  <a href="https://paypal.me/kamilmysliwiec" target="_blank"><img src="https://img.shields.io/badge/Donate-PayPal-ff3f59.svg" alt="Donate us"/></a>
-    <a href="https://opencollective.com/nest#sponsor"  target="_blank"><img src="https://img.shields.io/badge/Support%20us-Open%20Collective-41B883.svg" alt="Support us"></a>
-  <a href="https://twitter.com/nestframework" target="_blank"><img src="https://img.shields.io/twitter/follow/nestframework.svg?style=social&label=Follow" alt="Follow us on Twitter"></a>
-</p>
-  <!--[![Backers on Open Collective](https://opencollective.com/nest/backers/badge.svg)](https://opencollective.com/nest#backer)
-  [![Sponsors on Open Collective](https://opencollective.com/nest/sponsors/badge.svg)](https://opencollective.com/nest#sponsor)-->
+Backend for cosmetics product photography and evidence-grounded product descriptions. Built with NestJS, TypeScript, GraphQL, MongoDB and JWT authentication.
 
-## Description
+## Key features
 
-[Nest](https://github.com/nestjs/nest) framework TypeScript starter repository.
+- **Photo Studio:** Photoroom background removal and professional product-photo enhancement.
+- **Guest preview:** one free image enhancement, with authenticated claiming and saving.
+- **Packaging intelligence:** Google Vision OCR and OpenRouter AI descriptions grounded in packaging evidence.
+- **Four languages:** Uzbek, English, Korean and Russian; generate one selected description language at a time.
+- **Secure accounts:** JWT access tokens, HttpOnly refresh cookies and ownership checks.
+- **Product history:** saved images and multilingual descriptions with protected media access.
 
-## Project setup
+## Tech stack
+
+NestJS 10 / TypeScript / GraphQL + REST / MongoDB + Mongoose / JWT + Passport / Sharp / Jest
+
+## Quick start
+
+Requires **Node.js 24.22.2**, **npm 11.19.1** and a running MongoDB instance.
 
 ```bash
-$ npm install
+git clone https://github.com/madina0511/beautyscan-backend.git
+cd beautyscan-backend
+npm ci
 ```
 
-## Compile and run the project
+Create a private `.env` in the project root. Configure these settings with your own values:
+
+| Settings | Purpose |
+| --- | --- |
+| `MONGO_URI` | MongoDB connection |
+| `JWT_ACCESS_SECRET`, `JWT_REFRESH_EXPIRES_IN` | Independent secret of at least 32 bytes; refresh duration, e.g. `7d` |
+| `FRONTEND_URL` | Frontend origin; locally `http://localhost:3001` |
+| `RESEND_API_KEY`, `RESEND_FROM_EMAIL` | Email delivery and password-reset workflows |
+| `GOOGLE_APPLICATION_CREDENTIALS` | Private Google Vision service-account path, or use Application Default Credentials |
+| `OPENROUTER_API_KEY` | AI description generation |
+| `PHOTOROOM_API_KEY` | Local sandbox image processing |
+| `PHOTOROOM_DAILY_CALL_LIMIT`, `PHOTOROOM_MAX_CONCURRENT` | Positive limits; maximum 100 daily calls and 4 concurrent calls |
+| `PHOTOROOM_GUEST_ENABLED`, `PHOTOROOM_GUEST_HASH_SECRET` | Set `true` to enable guests; use a separate secret of at least 32 bytes |
+| `PHOTOROOM_GUEST_IP_HOURLY_LIMIT`, `PHOTOROOM_GUEST_MAX_ACTIVE` | Positive guest limits; maximum 10 per IP/hour and 4 active |
+
+Never commit environment files, credentials or uploaded images. Provider-backed operations may incur charges.
 
 ```bash
-# development
-$ npm run start
-
-# watch mode
-$ npm run start:dev
-
-# production mode
-$ npm run start:prod
+npm run start:dev
 ```
 
-## Run tests
+Default API: `http://localhost:3000/graphql`. Image and OCR workflows use REST controllers alongside GraphQL.
+
+## Testing and build
 
 ```bash
-# unit tests
-$ npm run test
-
-# e2e tests
-$ npm run test:e2e
-
-# test coverage
-$ npm run test:cov
+npm test -- --runInBand
+npm run test:cov
+npx tsc --noEmit --incremental false
+npm run build
+npm run start:prod
 ```
 
-## Deployment
+Additional scripts: `npm run test:e2e` (requires configured services) and `npm run lint` (applies fixes).
 
-When you're ready to deploy your NestJS application to production, there are some key steps you can take to ensure it runs as efficiently as possible. Check out the [deployment documentation](https://docs.nestjs.com/deployment) for more information.
+For production, set `NODE_ENV=production`, configure HTTPS and the correct frontend origin, keep media storage private and persistent, and supply `PHOTOROOM_PRODUCTION_API_KEY` instead of the sandbox credential.
 
-If you are looking for a cloud-based platform to deploy your NestJS application, check out [Mau](https://mau.nestjs.com), our official platform for deploying NestJS applications on AWS. Mau makes deployment straightforward and fast, requiring just a few simple steps:
+## Structure
 
-```bash
-$ npm install -g mau
-$ mau deploy
-```
+`src/` contains feature modules, services, guards, schemas and unit tests. `test/` contains application e2e tests. `uploads/` holds private runtime media and is excluded from Git.
 
-With Mau, you can deploy your application in just a few clicks, allowing you to focus on building features rather than managing infrastructure.
+## Frontend
 
-## Resources
+[BeautyScan AI Frontend](https://github.com/madina0511/beautyscan-frontend)
 
-Check out a few resources that may come in handy when working with NestJS:
+## Author
 
-- Visit the [NestJS Documentation](https://docs.nestjs.com) to learn more about the framework.
-- For questions and support, please visit our [Discord channel](https://discord.gg/G7Qnnhy).
-- To dive deeper and get more hands-on experience, check out our official video [courses](https://courses.nestjs.com/).
-- Deploy your application to AWS with the help of [NestJS Mau](https://mau.nestjs.com) in just a few clicks.
-- Visualize your application graph and interact with the NestJS application in real-time using [NestJS Devtools](https://devtools.nestjs.com).
-- Need help with your project (part-time to full-time)? Check out our official [enterprise support](https://enterprise.nestjs.com).
-- To stay in the loop and get updates, follow us on [X](https://x.com/nestframework) and [LinkedIn](https://linkedin.com/company/nestjs).
-- Looking for a job, or have a job to offer? Check out our official [Jobs board](https://jobs.nestjs.com).
-
-## Support
-
-Nest is an MIT-licensed open source project. It can grow thanks to the sponsors and support by the amazing backers. If you'd like to join them, please [read more here](https://docs.nestjs.com/support).
-
-## Stay in touch
-
-- Author - [Kamil Myśliwiec](https://twitter.com/kammysliwiec)
-- Website - [https://nestjs.com](https://nestjs.com/)
-- Twitter - [@nestframework](https://twitter.com/nestframework)
-
-## License
-
-Nest is [MIT licensed](https://github.com/nestjs/nest/blob/master/LICENSE).
+**Madina Burieva**
