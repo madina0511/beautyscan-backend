@@ -41,9 +41,10 @@ uploads
 # Google Cloud credentials
 credentials/
 
-# Environment variants (keep the public template)
+# Environment variants
 .env.*
-!.env.example
+*.env
+*.env.*
 
 # Dependency, build, and test output at any depth
 node_modules/
@@ -53,6 +54,21 @@ coverage/
 # Private keys
 *.pem
 *.key
+*.p12
+*.pfx
+secrets/
+.aws/
+.ssh/
+*service-account*.json
+*service_account*.json
+*credentials*.json
+build/
+out/
+.next/
+*.tsbuildinfo
+
+# Keep already tracked Markdown unchanged; exclude new documentation.
+*.md
 
 # OS and editor temporary files
 Thumbs.db

@@ -2,7 +2,11 @@ import sharp from 'sharp';
 import { stat } from 'fs/promises';
 import { ImageNormalizationService } from '../product-image/image-normalization.service';
 import { MAX_UPLOAD_BYTES } from '../product-image/image-upload.config';
-import { INestApplication, ValidationPipe } from '@nestjs/common';
+import {
+  HttpException,
+  INestApplication,
+  ValidationPipe,
+} from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Test } from '@nestjs/testing';
 import { getModelToken } from '@nestjs/mongoose';
@@ -22,6 +26,7 @@ import { MemberStatus } from '../members/schemas/member.schema';
 import { ProductImageController } from '../product-image/product-image.controller';
 import { ProductImageResolver } from '../product-image/product-image.resolver';
 import { ProductImageService } from '../product-image/product-image.service';
+import { ProviderAdmissionService } from '../product-image/provider-admission.service';
 import { OcrController } from '../ocr/ocr.controller';
 import { OcrService } from '../ocr/ocr.service';
 import { AiDescriptionService } from '../ai-description/ai-description.service';
@@ -35,7 +40,10 @@ describe('Product processing security (mocked providers and database)', () => {
   let normalizer: jest.SpyInstance;
   let server: Server;
   let images: ProductImageService;
-  let imageProvider: jest.SpyInstance<Promise<Buffer>, [string]>;
+  let imageProvider: jest.SpyInstance<
+    ReturnType<ProductImageService['createFinalEditedImage']>,
+    Parameters<ProductImageService['createFinalEditedImage']>
+  >;
   const secret = randomBytes(32).toString('hex');
   const jwt = new JwtService({ secret });
   const owner = new Types.ObjectId();
@@ -49,6 +57,8 @@ describe('Product processing security (mocked providers and database)', () => {
   const model = { findOne: jest.fn(), findOneAndUpdate: jest.fn() };
   const ocr = { extractText: jest.fn() };
   const ai = { generateDescription: jest.fn() };
+  const admission = { reserve: jest.fn(), release: jest.fn() };
+  const post = jest.fn();
   const directories = [
     'uploads/products',
     'uploads/products/final',
@@ -95,6 +105,7 @@ describe('Product processing security (mocked providers and database)', () => {
       providers: [
         ProductsService,
         ProductImageService,
+        { provide: ProviderAdmissionService, useValue: admission },
         ImageNormalizationService,
         ProductImageResolver,
         ProductsResolver,
@@ -116,7 +127,7 @@ describe('Product processing security (mocked providers and database)', () => {
               name === 'JWT_ACCESS_SECRET' ? secret : undefined,
           },
         },
-        { provide: HttpService, useValue: {} },
+        { provide: HttpService, useValue: { axiosRef: { post } } },
         { provide: OcrService, useValue: ocr },
         { provide: AiDescriptionService, useValue: ai },
       ],
@@ -155,6 +166,11 @@ describe('Product processing security (mocked providers and database)', () => {
     model.findOne.mockImplementation(query);
     model.findOneAndUpdate.mockImplementation(query);
     imageProvider.mockResolvedValue(imageFixture);
+    admission.reserve
+      .mockReset()
+      .mockResolvedValue({ id: 'fixture', apiKey: 'sandbox_fixture' });
+    admission.release.mockReset().mockResolvedValue(undefined);
+    post.mockReset().mockResolvedValue({ data: imageFixture });
     ocr.extractText.mockResolvedValue('Package text');
     ai.generateDescription.mockResolvedValue('Description');
   });
@@ -172,6 +188,77 @@ describe('Product processing security (mocked providers and database)', () => {
   });
   afterAll(async () => {
     await app?.close();
+  });
+
+  it('rejects anonymous automatic enhancement before provider admission', async () => {
+    await request(server)
+      .post('/product-image/enhance')
+      .attach('image', imageFixture, 'test.png')
+      .expect(401);
+    expect(admission.reserve).not.toHaveBeenCalled();
+    expect(model.findOneAndUpdate).not.toHaveBeenCalled();
+  });
+
+  it('automatically saves a server-generated product owned by the JWT member after admission', async () => {
+    imageProvider.mockRestore();
+    model.findOneAndUpdate.mockImplementation(
+      (filter: { _id: string; ownerId: string }) => ({
+        exec: async () => ({ ...document, ...filter }),
+      }),
+    );
+    try {
+      const result = await request(server)
+        .post('/product-image/enhance')
+        .set('Authorization', `Bearer ${token()}`)
+        .attach('image', imageFixture, 'test.png')
+        .expect(201);
+      expect(result.body.productId).toMatch(/^[a-f0-9]{24}$/);
+      expect(result.body.productId).not.toBe(productId);
+      expect(admission.reserve).toHaveBeenCalledWith(false);
+      expect(post).toHaveBeenCalledTimes(1);
+      expect(model.findOneAndUpdate).toHaveBeenCalledWith(
+        { _id: result.body.productId, ownerId: owner.toHexString() },
+        {
+          $setOnInsert: expect.objectContaining({
+            ownerId: owner.toHexString(),
+            originalImage: result.body.originalImage,
+            finalEditedImage: result.body.finalEditedImage,
+          }),
+        },
+        expect.objectContaining({ upsert: true }),
+      );
+    } finally {
+      imageProvider = jest.spyOn(images, 'createFinalEditedImage');
+    }
+  });
+
+  it('does not create a product when provider admission refuses enhancement', async () => {
+    imageProvider.mockRestore();
+    admission.reserve.mockRejectedValue(
+      new HttpException({ code: 'DEMO_LIMIT_REACHED' }, 503),
+    );
+    try {
+      await request(server)
+        .post('/product-image/enhance')
+        .set('Authorization', `Bearer ${token()}`)
+        .attach('image', imageFixture, 'test.png')
+        .expect(503);
+      expect(post).not.toHaveBeenCalled();
+      expect(model.findOneAndUpdate).not.toHaveBeenCalled();
+    } finally {
+      imageProvider = jest.spyOn(images, 'createFinalEditedImage');
+    }
+  });
+
+  it('refuses client product and ownership fields on automatic enhancement', async () => {
+    await request(server)
+      .post('/product-image/enhance')
+      .set('Authorization', `Bearer ${token()}`)
+      .field('productId', productId)
+      .attach('image', imageFixture, 'test.png')
+      .expect(400);
+    expect(imageProvider).not.toHaveBeenCalled();
+    expect(model.findOneAndUpdate).not.toHaveBeenCalled();
   });
 
   it.each(['/product-image/upload', '/ocr/upload'])(
@@ -266,6 +353,76 @@ describe('Product processing security (mocked providers and database)', () => {
         .expect(500);
       expect(await inventory()).toEqual(before);
       expect(model.findOneAndUpdate).not.toHaveBeenCalled();
+    },
+  );
+  it('accepts a valid JPG multipart upload with JWT and an owned product', async () => {
+    const jpeg = await sharp(imageFixture)
+      .flatten({ background: 'white' })
+      .jpeg()
+      .toBuffer();
+    const response = await request(server)
+      .post('/product-image/upload')
+      .set('Authorization', `Bearer ${token()}`)
+      .field('productId', productId)
+      .attach('image', jpeg, {
+        filename: 'valid-photo.jpg',
+        contentType: 'image/jpeg',
+      })
+      .expect(201);
+    expect(response.body.productId).toBe(productId);
+    expect(response.body.originalImage).toMatch(/\.jpg$/);
+    expect(response.body.finalEditedImage).toMatch(/\.png$/);
+    expect(imageProvider).toHaveBeenCalledTimes(1);
+    expect(model.findOneAndUpdate.mock.calls[0][0]).toEqual({
+      _id: productId,
+      ownerId: owner.toHexString(),
+    });
+  });
+  it('runs authenticated upload through admission and provider, then saves owned history images', async () => {
+    imageProvider.mockImplementation((path) =>
+      ProductImageService.prototype.createFinalEditedImage.call(images, path),
+    );
+    const response = await request(server)
+      .post('/product-image/upload')
+      .set('Authorization', `Bearer ${token()}`)
+      .field('productId', productId)
+      .attach('image', imageFixture, 'test.png')
+      .expect(201);
+    expect(admission.reserve).toHaveBeenCalledWith(false);
+    expect(post).toHaveBeenCalledTimes(1);
+    expect(admission.release).toHaveBeenCalledWith('fixture');
+    expect(response.body.productId).toBe(productId);
+    expect((await stat(response.body.finalEditedImage as string)).size).toBe(
+      imageFixture.length,
+    );
+    expect(model.findOneAndUpdate.mock.calls[0][0]).toEqual({
+      _id: productId,
+      ownerId: owner.toHexString(),
+    });
+    expect(model.findOneAndUpdate.mock.calls[0][1].$set).toMatchObject({
+      originalImage: response.body.originalImage,
+      finalEditedImage: response.body.finalEditedImage,
+    });
+  });
+  it.each(['DEMO_LIMIT_REACHED', 'PROVIDER_ADMISSION_UNAVAILABLE'])(
+    'returns a safe %s response without provider calls or history writes',
+    async (code) => {
+      const before = await inventory();
+      imageProvider.mockImplementation((path) =>
+        ProductImageService.prototype.createFinalEditedImage.call(images, path),
+      );
+      admission.reserve.mockRejectedValue(new HttpException({ code }, 503));
+      const response = await request(server)
+        .post('/product-image/upload')
+        .set('Authorization', `Bearer ${token()}`)
+        .field('productId', productId)
+        .attach('image', imageFixture, 'test.png')
+        .expect(503);
+      expect(response.body.code).toBe(code);
+      expect(post).not.toHaveBeenCalled();
+      expect(admission.release).not.toHaveBeenCalled();
+      expect(model.findOneAndUpdate).not.toHaveBeenCalled();
+      expect(await inventory()).toEqual(before);
     },
   );
   it('cleans original and final files when the ownership-scoped final write fails', async () => {
@@ -422,6 +579,115 @@ describe('Product processing security (mocked providers and database)', () => {
       .expect(500);
     expect(await inventory()).toEqual(before);
     expect(model.findOneAndUpdate).not.toHaveBeenCalled();
+  });
+  it.each(['uz', 'en', 'ko', 'ru'])(
+    'generates and saves only the requested description language: %s',
+    async (language) => {
+      const originalText = 'Original packaging text\nINCI: Aqua';
+      ocr.extractText.mockResolvedValueOnce(originalText);
+      const result = await request(server)
+        .post('/ocr/upload')
+        .set('Authorization', `Bearer ${token()}`)
+        .field('productId', productId)
+        .field('language', language)
+        .attach('image', imageFixture, 'package.png')
+        .expect(201);
+      expect(result.body.extractedText).toBe(originalText);
+      expect(result.body.language).toBe(language);
+      expect(ai.generateDescription).toHaveBeenCalledTimes(1);
+      expect(ai.generateDescription).toHaveBeenCalledWith(
+        originalText,
+        language,
+      );
+      expect(model.findOneAndUpdate).toHaveBeenCalledTimes(1);
+      expect(model.findOneAndUpdate.mock.calls[0]).toEqual([
+        { _id: productId, ownerId: owner.toHexString() },
+        {
+          $set: {
+            packageImage: result.body.packageImage,
+            [`descriptions.${language}`]: 'Description',
+          },
+        },
+        { new: true },
+      ]);
+      expect(result.headers['cache-control']).toBe('private, no-store');
+    },
+  );
+  it.each(['', 'all', 'fr', 'en,ko', 'toString', 'en\u0000'])(
+    'rejects missing or unsupported description language before providers: %s',
+    async (language) => {
+      await request(server)
+        .post('/ocr/upload')
+        .set('Authorization', `Bearer ${token()}`)
+        .field('productId', productId)
+        .field('language', language)
+        .attach('image', imageFixture, 'package.png')
+        .expect(400);
+      expect(ocr.extractText).not.toHaveBeenCalled();
+      expect(ai.generateDescription).not.toHaveBeenCalled();
+      expect(model.findOneAndUpdate).not.toHaveBeenCalled();
+    },
+  );
+  it.each([
+    [503, 'DESCRIPTION_UNAVAILABLE'],
+    [422, 'PACKAGING_INFORMATION_INSUFFICIENT'],
+  ] as const)(
+    'does not save packaging or change descriptions on %s %s',
+    async (status, code) => {
+      const before = await inventory();
+      ai.generateDescription.mockRejectedValueOnce(
+        new HttpException({ code, message: 'Generation unavailable' }, status),
+      );
+      const result = await request(server)
+        .post('/ocr/upload')
+        .set('Authorization', `Bearer ${token()}`)
+        .field('productId', productId)
+        .field('language', 'ko')
+        .attach('image', imageFixture, 'package.png')
+        .expect(status);
+      expect(result.body.code).toBe(code);
+      expect(model.findOneAndUpdate).not.toHaveBeenCalled();
+      expect(await inventory()).toEqual(before);
+    },
+  );
+  it('skips generation and saving when OCR finds no text', async () => {
+    ocr.extractText.mockRejectedValueOnce(
+      new HttpException({ code: 'OCR_NO_TEXT', message: 'No text' }, 400),
+    );
+    await request(server)
+      .post('/ocr/upload')
+      .set('Authorization', `Bearer ${token()}`)
+      .field('productId', productId)
+      .field('language', 'uz')
+      .attach('image', imageFixture, 'package.png')
+      .expect(400);
+    expect(ai.generateDescription).not.toHaveBeenCalled();
+    expect(model.findOneAndUpdate).not.toHaveBeenCalled();
+  });
+  it('saves formatted copy unchanged to only the chosen language on the owned product', async () => {
+    const description =
+      '# Example Cream\n\nA thoughtful care choice.\n\n## Listed ingredients\n- **Glycerin**';
+    ai.generateDescription.mockResolvedValueOnce(description);
+    const result = await request(server)
+      .post('/ocr/upload')
+      .set('Authorization', `Bearer ${token()}`)
+      .field('productId', productId)
+      .field('language', 'en')
+      .attach('image', imageFixture, 'package.png')
+      .expect(201);
+    expect(result.body.description).toBe(description);
+    expect(ai.generateDescription).toHaveBeenCalledTimes(1);
+    expect(model.findOneAndUpdate).toHaveBeenCalledTimes(1);
+    expect(model.findOneAndUpdate.mock.calls[0]).toEqual([
+      { _id: productId, ownerId: owner.toHexString() },
+      {
+        $set: {
+          packageImage: result.body.packageImage,
+          'descriptions.en': description,
+        },
+      },
+      { new: true },
+    ]);
   });
   const mutation = (id: string) =>
     `mutation { removeBackground(input: { productId: "${id}", image: "reference" }) { image } }`;

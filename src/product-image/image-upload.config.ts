@@ -1,8 +1,8 @@
-// Multer emits LIMIT_FILE_SIZE when the threshold is reached, not exceeded.
-// One extra sentinel byte permits exactly MAX_UPLOAD_BYTES; larger files fail.
+// Multer 2.5 accepts the configured boundary inclusively. No sentinel byte:
+// exactly MAX_UPLOAD_BYTES is allowed, larger files fail before normalization.
 export const MAX_UPLOAD_BYTES = 10_000_000;
 export const IMAGE_UPLOAD_LIMITS = {
-  fileSize: MAX_UPLOAD_BYTES + 1,
+  fileSize: MAX_UPLOAD_BYTES,
   files: 1,
   fields: 4,
   parts: 6,

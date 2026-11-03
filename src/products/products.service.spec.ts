@@ -26,6 +26,7 @@ describe('ProductsService ownership', () => {
     'final',
     'processed',
     'description',
+    'packaging',
   ] as const;
   type Operation = (typeof operations)[number];
   function run(operation: Operation, id = productId, memberId = owner) {
@@ -38,6 +39,14 @@ describe('ProductsService ownership', () => {
         return service.updateFinalEditedImage(id, memberId, 'final');
       case 'processed':
         return service.updateProcessedImages(id, memberId, 'original', 'final');
+      case 'packaging':
+        return service.updatePackagingDescription(
+          id,
+          memberId,
+          'ko',
+          'description',
+          'package.png',
+        );
       case 'description':
         return service.updateDescription(id, memberId, 'en', 'description');
     }
@@ -111,5 +120,65 @@ describe('ProductsService ownership', () => {
       UnauthorizedException,
     );
     expect(model.find).not.toHaveBeenCalled();
+  });
+
+  it('publishes a claimed product once using only set-on-insert and an owner-scoped ID', async () => {
+    await service.createClaimedProduct(
+      productId,
+      owner,
+      'original.png',
+      'final.png',
+    );
+    expect(model.findOneAndUpdate.mock.calls[0]).toEqual([
+      { _id: productId, ownerId: owner },
+      {
+        $setOnInsert: {
+          name: `Enhanced Product ${productId.slice(-6).toUpperCase()}`,
+          ownerId: owner,
+          originalImage: 'original.png',
+          finalEditedImage: 'final.png',
+        },
+      },
+      {
+        new: true,
+        upsert: true,
+        runValidators: true,
+        setDefaultsOnInsert: true,
+      },
+    ]);
+    expect(await service.findClaimedProduct(productId, stranger)).toBeNull();
+    expect(model.findOne.mock.calls[0][0]).toEqual({
+      _id: productId,
+      ownerId: stranger,
+    });
+  });
+
+  it('validates claim owner and product IDs before database access', async () => {
+    await expect(
+      service.createClaimedProduct('invalid', owner, 'original', 'final'),
+    ).rejects.toBeInstanceOf(BadRequestException);
+    await expect(
+      service.createClaimedProduct(productId, 'invalid', 'original', 'final'),
+    ).rejects.toBeInstanceOf(UnauthorizedException);
+    await expect(
+      service.findClaimedProduct('invalid', owner),
+    ).rejects.toBeInstanceOf(BadRequestException);
+    expect(model.findOneAndUpdate).not.toHaveBeenCalled();
+    expect(model.findOne).not.toHaveBeenCalled();
+  });
+  it('preserves other description languages with a single dotted field update', async () => {
+    await service.updatePackagingDescription(
+      productId,
+      owner,
+      'ko',
+      'new Korean description',
+      'package.png',
+    );
+    expect(model.findOneAndUpdate.mock.calls[0][1]).toEqual({
+      $set: {
+        packageImage: 'package.png',
+        'descriptions.ko': 'new Korean description',
+      },
+    });
   });
 });

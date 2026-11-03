@@ -16,8 +16,8 @@ async function bootstrap() {
   // 3. Verify the real client IP is detected correctly.
   // 4. Test GraphQL rate limiting behind the proxy.
   // SECURITY: Do not use 'trust proxy: true' without validation.
-  app.set('trust proxy', 'loopback');
-
+  // Guest IP limits use req.ip under this policy, never raw forwarded headers.
+  // A non-loopback deployment proxy remains untrusted until explicitly reviewed.
   app.set('trust proxy', 'loopback');
 
   app.enableCors({

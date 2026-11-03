@@ -1,12 +1,14 @@
 import {
   Injectable,
-  InternalServerErrorException,
+  ServiceUnavailableException,
+  Logger,
   BadRequestException,
 } from '@nestjs/common';
 import { ImageAnnotatorClient } from '@google-cloud/vision';
 
 @Injectable()
 export class OcrService {
+  private readonly logger = new Logger(OcrService.name);
   private readonly visionClient: ImageAnnotatorClient;
 
   constructor() {
@@ -24,7 +26,10 @@ export class OcrService {
       const text = result.fullTextAnnotation?.text?.trim();
 
       if (!text) {
-        throw new BadRequestException('No text could be detected in the image');
+        throw new BadRequestException({
+          code: 'OCR_NO_TEXT',
+          message: 'No text could be detected in the image',
+        });
       }
 
       return text;
@@ -33,11 +38,12 @@ export class OcrService {
         throw error;
       }
 
-      console.error('Google Vision OCR error:', error);
+      this.logger.warn('Google Vision text extraction failed');
 
-      throw new InternalServerErrorException(
-        'Failed to extract text from image',
-      );
+      throw new ServiceUnavailableException({
+        code: 'OCR_UNAVAILABLE',
+        message: 'Failed to extract text from image',
+      });
     }
   }
 }

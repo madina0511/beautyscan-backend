@@ -19,6 +19,9 @@ import {
   BadRequestException,
   Body,
   Controller,
+  Header,
+  HttpException,
+  Logger,
   Post,
   UploadedFile,
   UseInterceptors,
@@ -41,6 +44,7 @@ interface UploadedPackageImage {
 
 @Controller('ocr')
 export class OcrController {
+  private readonly logger = new Logger(OcrController.name);
   constructor(
     private readonly ocrService: OcrService,
     private readonly aiDescriptionService: AiDescriptionService,
@@ -50,6 +54,7 @@ export class OcrController {
 
   @UseGuards(JwtAuthGuard)
   @Post('upload')
+  @Header('Cache-Control', 'private, no-store')
   @UseInterceptors(
     UploadFailureCleanupInterceptor,
     FileInterceptor('image', {
@@ -70,6 +75,7 @@ export class OcrController {
     let normalized: NormalizedImage | undefined;
     let packageImage: string | undefined;
     let saved = false;
+    let stage = 'ownership';
     try {
       const memberId = authenticatedMemberId(request);
       await this.productsService.requireOwnedProduct(productId, memberId);
@@ -85,13 +91,17 @@ export class OcrController {
         throw new BadRequestException('Language must be uz, en, ru, or ko');
       }
 
+      stage = 'normalization';
       normalized = await this.normalization.normalize(file.path, 'ocr');
+      stage = 'ocr';
       const extractedText = await this.ocrService.extractText(normalized.path);
 
+      stage = 'description';
       const description = await this.aiDescriptionService.generateDescription(
         extractedText,
         language,
       );
+      stage = 'storage';
       const outputDir = join('uploads', 'packages', 'final');
       await mkdir(outputDir, { recursive: true });
       packageImage = join(
@@ -99,11 +109,13 @@ export class OcrController {
         `${randomUUID()}.${normalized.format === 'jpeg' ? 'jpg' : 'png'}`,
       );
       await copyFile(normalized.path, packageImage);
-      await this.productsService.updateDescription(
+      stage = 'database_save';
+      await this.productsService.updatePackagingDescription(
         productId,
         memberId,
         language,
         description,
+        packageImage,
       );
 
       saved = true;
@@ -114,8 +126,16 @@ export class OcrController {
         description,
         language,
         message:
-          'Package text extracted and descriptions generated successfully',
+          'Package text extracted and selected-language description saved successfully',
       };
+    } catch (error) {
+      // Do not serialize errors, request bodies, product IDs or file paths.
+      this.logger.warn({
+        event: 'packaging_generation_failed',
+        stage,
+        status: error instanceof HttpException ? error.getStatus() : 500,
+      });
+      throw error;
     } finally {
       await cleanupUpload(file.path);
       if (normalized) await cleanupUpload(normalized.path);

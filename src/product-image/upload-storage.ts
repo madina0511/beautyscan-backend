@@ -25,7 +25,9 @@ function stateFor(request: Request): UploadState {
   return state;
 }
 
-export function temporaryImageStorage(destination: string): StorageEngine {
+export function temporaryImageStorage(
+  destination: NonNullable<Parameters<typeof diskStorage>[0]>['destination'],
+): StorageEngine {
   const storage = diskStorage({
     destination,
     filename: (_request, _file, callback) =>

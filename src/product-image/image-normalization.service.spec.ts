@@ -158,6 +158,17 @@ describe('ImageNormalizationService (real codecs)', () => {
       4 * Math.ceil((MAX_OCR_IMAGE_BYTES + 1) / 3) + OCR_ENVELOPE_BYTES,
     ).toBeGreaterThan(OCR_JSON_BYTES);
   });
+  it('reports a valid high-resolution JPG as oversized, not corrupt', async () => {
+    const bytes = await sharp({
+      create: { width: 5001, height: 5000, channels: 3, background: 'white' },
+    })
+      .jpeg()
+      .toBuffer();
+    expect(bytes.length).toBeLessThan(10_000_000);
+    await expect(normalize(bytes)).rejects.toThrow(
+      'Image exceeds the 25 megapixel or 10,000 pixel dimension limit',
+    );
+  });
   it('rejects oversized normalized OCR payloads and deletes the working output', async () => {
     const bytes = await sharp(randomBytes(1500 * 1500 * 4), {
       raw: { width: 1500, height: 1500, channels: 4 },

@@ -27,6 +27,7 @@ export class ImageNormalizationService {
   async normalize(
     inputPath: string,
     purpose: 'product' | 'ocr',
+    temporaryDirectory?: string,
   ): Promise<NormalizedImage> {
     let outputPath: string | undefined;
     try {
@@ -70,7 +71,8 @@ export class ImageNormalizationService {
           'Image content does not match its detected format',
         );
       const outputFormat = metadata.hasAlpha ? 'png' : 'jpeg';
-      const outputDir = join(process.cwd(), 'uploads', 'temporary');
+      const outputDir =
+        temporaryDirectory ?? join(process.cwd(), 'uploads', 'temporary');
       await mkdir(outputDir, { recursive: true });
       outputPath = join(
         outputDir,
@@ -103,6 +105,14 @@ export class ImageNormalizationService {
         error instanceof PayloadTooLargeException
       )
         throw error;
+      if (
+        error instanceof Error &&
+        error.message.includes('Input image exceeds pixel limit')
+      ) {
+        throw new BadRequestException(
+          'Image exceeds the 25 megapixel or 10,000 pixel dimension limit',
+        );
+      }
       throw new BadRequestException(
         'Invalid or corrupt image, or image exceeds decoding limits',
       );

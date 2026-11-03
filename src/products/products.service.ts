@@ -45,6 +45,46 @@ export class ProductsService {
       .exec();
   }
 
+  async findClaimedProduct(
+    productId: string,
+    memberId: string,
+  ): Promise<ProductDocument | null> {
+    return this.productModel
+      .findOne(this.ownershipFilter(productId, memberId))
+      .exec();
+  }
+
+  async createClaimedProduct(
+    productId: string,
+    memberId: string,
+    originalImage: string,
+    finalEditedImage: string,
+  ): Promise<ProductDocument> {
+    // The reserved _id is the idempotency key. Publish both media references in
+    // one insert after their files are durable; retries never overwrite a product.
+    const product = await this.productModel
+      .findOneAndUpdate(
+        this.ownershipFilter(productId, memberId),
+        {
+          $setOnInsert: {
+            name: `Enhanced Product ${productId.slice(-6).toUpperCase()}`,
+            ownerId: memberId,
+            originalImage,
+            finalEditedImage,
+          },
+        },
+        {
+          new: true,
+          upsert: true,
+          runValidators: true,
+          setDefaultsOnInsert: true,
+        },
+      )
+      .exec();
+    if (!product) throw new NotFoundException('Product not found');
+    return product;
+  }
+
   async requireOwnedProduct(
     productId: string,
     memberId: string,
@@ -98,6 +138,21 @@ export class ProductsService {
   ): Promise<ProductDocument> {
     return this.updateOwned(productId, memberId, {
       $set: { originalImage, finalEditedImage },
+    });
+  }
+
+  async updatePackagingDescription(
+    productId: string,
+    memberId: string,
+    language: 'uz' | 'en' | 'ru' | 'ko',
+    description: string,
+    packageImage: string,
+  ): Promise<ProductDocument> {
+    if (!['uz', 'en', 'ru', 'ko'].includes(language)) {
+      throw new BadRequestException('Language must be uz, en, ru, or ko');
+    }
+    return this.updateOwned(productId, memberId, {
+      $set: { packageImage, [`descriptions.${language}`]: description },
     });
   }
 
