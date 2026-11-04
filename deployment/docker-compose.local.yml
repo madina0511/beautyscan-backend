@@ -1,0 +1,85 @@
+# Standalone local stack. Do not merge with docker-compose.yml (production).
+name: beautyscan-ai-local
+
+x-runtime: &runtime
+  restart: unless-stopped
+  init: true
+  cap_drop: [ALL]
+  security_opt: [no-new-privileges:true]
+  stop_grace_period: 30s
+  logging:
+    driver: json-file
+    options:
+      max-size: 10m
+      max-file: '3'
+
+services:
+  backend:
+    <<: *runtime
+    image: beautyscan-ai-backend:dev-local
+    build:
+      context: ..
+    # Nest ConfigModule reads /app/.env with the existing dotenv parser.
+    # Do not parse secrets through Compose: existing values contain literal $.
+    environment:
+      # The existing application uses this to select Photoroom Sandbox and
+      # non-secure localhost cookies. Compiled JS still runs directly.
+      NODE_ENV: development
+      PORT: '3000'
+      FRONTEND_URL: http://localhost:3100
+      PHOTOROOM_GUEST_COOKIE_SAMESITE: lax
+      GOOGLE_APPLICATION_CREDENTIALS: /run/secrets/google_vision
+    ports: ['127.0.0.1:3101:3000']
+    secrets: [google_vision]
+    volumes:
+      - local_uploads:/app/uploads
+      - type: bind
+        source: ../.env
+        target: /app/.env
+        read_only: true
+        bind:
+          create_host_path: false
+    networks: [backend]
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "fetch('http://127.0.0.1:3000/graphql',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({query:'{ getHello }'}),signal:AbortSignal.timeout(4000)}).then(async r=>{const b=await r.json();if(!r.ok||typeof b.data?.getHello!=='string')process.exit(1)}).catch(()=>process.exit(1))"
+      interval: 30s
+      timeout: 5s
+      start_period: 90s
+      retries: 3
+
+  frontend:
+    <<: *runtime
+    image: beautyscan-ai-frontend:dev-local
+    build:
+      context: ../../frontend
+      args:
+        # Browser requests need the published host port, not a Docker hostname.
+        NEXT_PUBLIC_GRAPHQL_URL: http://localhost:3101/graphql
+        NEXT_PUBLIC_USD_TO_UZS: ${NEXT_PUBLIC_USD_TO_UZS:-}
+        NEXT_PUBLIC_USD_TO_KRW: ${NEXT_PUBLIC_USD_TO_KRW:-}
+    ports: ['127.0.0.1:3100:3001']
+    networks: [frontend]
+    depends_on:
+      backend:
+        condition: service_healthy
+    healthcheck:
+      test: [CMD, node, -e, "fetch('http://127.0.0.1:3001/',{signal:AbortSignal.timeout(4000)}).then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      start_period: 60s
+      retries: 3
+
+networks:
+  frontend:
+  backend:
+
+volumes:
+  local_uploads:
+
+secrets:
+  google_vision:
+    file: ../credentials/google-vision.json

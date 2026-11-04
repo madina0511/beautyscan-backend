@@ -87,3 +87,14 @@ $RECYCLE.BIN/
 /CODEX_COMMANDS.md
 
 /INTERVIEW_PREP.md
+
+# Reviewed shared deployment docs and placeholder templates only.
+# Private runtime env files and credentials remain ignored above.
+!/deployment/README.md
+!/deployment/LOCAL_DOCKER.md
+!/deployment/VERIFICATION.md
+!/deployment/.env.example
+!/deployment/backend.env.example
+
+# Local diagnostic uses an outdated internal service API; not release tooling.
+/scripts/diagnose-photoroom.cjs
