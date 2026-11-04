@@ -1,16 +1,36 @@
 // A small multilingual bridge for explicit packaging purposes, not benefits
 // inferred from ingredient presence, brand identity, or product category.
 const purposes: Record<string, RegExp> = {
-  tone: /dark[ -]?spots?|uneven (?:skin )?tone|pigment(?:ation)? (?:care|correct)|pigment dog|teri rangini bir tekis|пигментн\p{L}* пят|выравнив\p{L}* тон|неровн\p{L}* тон|잡티|기미|피부\s*톤/iu,
+  tone: /dark[ -]?spots?|uneven (?:skin )?tone|even[ -]looking (?:skin )?tone|pigment(?:ation)? (?:care|correct)|pigment dog|teri(?:ning)? rangi(?:ni)? bir tekis|пигментн\p{L}* пят|выравнив\p{L}* тон|неровн\p{L}* тон|잡티|기미|색소\s*침착|피부(?:의)?\s*톤|고른\s*톤/iu,
   moisture:
-    /moisturi[sz](?:ing|es|er)|hydrat(?:ing|es|ion)|retain moisture|nam(?:lik|lantir)|увлажн|удержива\p{L}* влаг|수분|보습/iu,
+    /moisturi[sz](?:e|ing|ation|er)|hydrat(?:e|ing|ion)|\bmoisture\b|humectant|nam(?:lik|lantir)|увлажн|удержива\p{L}* влаг|수분|보습/iu,
   soothing: /soothing|soothes|tinchlantir|успокаива|진정/iu,
   cleansing:
-    /cleansing|removes (?:makeup|impurities)|tozalash|очищени|클렌징|노폐물\s*제거/iu,
+    /cleans(?:ing|es|er)|removes (?:makeup|impurities)|tozala|очища|очищени|클렌징|세정|노폐물\s*제거/iu,
   sun: /sun protection|SPF\s*\d|quyoshdan himoya|защит\p{L}* от солнц|자외선\s*차단/iu,
   exfoliation: /exfoliat|eksfoliats|отшелуш|각질\s*제거/iu,
+  wrinkles: /wrinkl|ajin|морщин|주름/iu,
+  barrier: /skin barrier|teri to[‘’']sig|кожн\p{L}* барьер|장벽/iu,
+  antioxidant: /antioxidant|antioksidant|антиоксидант|항산화/iu,
 };
+const negatedPurpose =
+  /\b(?:not|no|without|never)\b|не\s+(?:увлаж|успока|очища|предназнач)|(?:namlantir|tinchlantir|tozala)\p{L}*may|아니|않|없/iu;
 export function packagingPurposes(text: string): string[] {
+  // Never promote a negated label claim into positive product evidence.
+  const positiveStatements = text
+    .split(/[\n.!?。]+/u)
+    .filter((line) => !negatedPurpose.test(line));
+  return Object.entries(purposes)
+    .filter(([, pattern]) =>
+      positiveStatements.some((line) => pattern.test(line)),
+    )
+    .map(([name]) => name);
+}
+
+// Topic recognition for separately qualified general ingredient text. Negative
+// finished-product disclaimers must not hide the ingredient topic; this function
+// is never used to establish a packaging benefit or authorize product efficacy.
+export function generalIngredientTopics(text: string): string[] {
   return Object.entries(purposes)
     .filter(([, pattern]) => pattern.test(text))
     .map(([name]) => name);

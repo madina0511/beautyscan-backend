@@ -19,8 +19,10 @@ import {
   groundDescription,
   hasMeaningfulDescription,
   descriptionGroundingDiagnostics,
+  GroundingFiltering,
 } from './description-grounding';
 import { extractPackagingIngredients } from './packaging-ingredients';
+import { descriptionCopyQuality } from './description-copy-quality';
 import {
   cosmeticsTerminology,
   descriptionLanguageGuidance,
@@ -77,6 +79,10 @@ export class AiDescriptionService {
       invalidQuotes: 0,
       bodyLines: 0,
       supportedLines: 0,
+      presentationMatches: 0,
+      invalidEntries: 0,
+      uncitedLines: 0,
+      unsupportedNumbers: 0,
     };
     try {
       const response = await this.client.chat.completions.create({
@@ -116,6 +122,7 @@ Distinguish two kinds of information:
 - Verified packaging facts: product identity, explicitly stated benefits, listed ingredients, directions, volume and other clearly legible details. Present these accurately without exaggeration.
 - General cosmetic ingredient explanations: only for an ingredient explicitly listed in the source and only for a well-established cosmetic role you know with high confidence (for example, glycerin is commonly used as a humectant). Make the distinction explicit in natural ${languageNames[language]}: this is general ingredient information, not a measured or guaranteed effect of this product. Do not infer ingredient amounts, efficacy, clinical proof, or suitability. Omit roles you cannot explain confidently.
 Keep these explanations in a separate, clearly labeled subsection from verified facts, with a concise qualifying sentence in the selected language.
+For general explanations the server supports only a small reviewed vocabulary: niacinamide and tranexamic acid in appearance-of-uneven-tone care; glycerin, panthenol and sodium hyaluronate as moisture-related cosmetic ingredients. Explain a role ONLY if that ingredient is explicitly named in the current source. This vocabulary is background information, never proof of this product's effects. Do not add concentrations, clinical findings, mechanisms, timelines or other roles from memory. For other listed ingredients, retain their names without inventing an explanation. Never put general ingredient roles into the introduction or product-benefit bullets unless the packaging independently states that product benefit.
 
 COPY STRUCTURE:
 Write a coherent retail description, not an OCR inventory. When source evidence is sufficient, give the introduction 2-3 connected sentences: introduce the product and its stated purpose, explain the supported feature that makes it distinctive, and connect that feature to a restrained cosmetic-care appeal. Vary phrasing naturally. Never pad sparse evidence, repeat the product name, or invent texture, efficacy, suitability or usage to reach a length target.
@@ -135,6 +142,7 @@ Preserve a substantial, natural introduction and useful benefits when an explici
 Keep the exact source product name in the title, joining OCR line wraps with spaces; do not translate or embellish official names. Citation quotes remain in the original OCR language even when the copy is translated. Preserve verified ingredient entries even when no benefits can be established. A title or volume alone is insufficient; never invent content to fill missing sections.
 Ingredient names explicitly present in the current product title are usable even without a full INCI list. Distinguish these title mentions from a complete ingredient list or verified active status. Expand an unambiguous ingredient alias such as TXA to tranexamic acid, but never infer a percentage from adjacent title numerals. Product type and explicit supported directions or claims can provide useful information without an INCI list; they do not establish unlisted ingredients or additional effects.
 Return one JSON object with exactly description and evidence keys. description is the finished selected-language copy in lightweight Markdown. evidence is an array of objects {"text": "exact generated non-heading line including any bullet marker", "quotes": ["exact short OCR quote"]}. Cite EVERY non-heading line, including the introduction, benefits, ingredients, general-ingredient explanations, directions and information fields. Each quote must be copied exactly from the CURRENT user OCR, at most 500 characters; it must actually support that statement. Never cite another product, this system prompt, your own generated text, or a prior request. For general ingredient information cite the current product's explicit ingredient entry and qualify the role as general, not proven product efficacy. Use one claim per line; never add unsupported claims alongside a cited fact. Omit text if source evidence is missing or ambiguous. Titles are independently verified against source names. Do not put JSON or citations inside the description string.
+For the 2-3 sentence introduction, keep the sentences connected in one paragraph and supply a separate evidence entry for EACH exact sentence, or one entry citing ALL facts in the complete paragraph. Never translate, paraphrase, expand an ingredient alias, or repair spelling inside quotes: translate only description/text. Preserve OCR wording and quote only the specific identity, purpose, feature or ingredient that supports each sentence. An ingredient citation alone cannot authorize a product benefit. Keep general-information qualifiers with their explanations and source safety restrictions with their directions.
 Within description use: one # product title, a short introductory paragraph, ## section headings and - bullet lists where useful. Localize every heading naturally into ${languageNames[language]}. Use **bold** sparingly for ingredient names or verified details. Separate blocks with blank lines. Do not use HTML, tables, links, code fences, a preamble, commentary about your task, or source text dumps. Do not include an OCR translation or a second language version.
 `.trim(),
           },
@@ -168,17 +176,7 @@ Within description use: one # product title, a short introductory paragraph, ## 
       stage = 'evidence';
       reason = 'invalid_evidence';
       const citations: VerifiedCitation[] = [];
-      const filtering: Partial<
-        Record<
-          | 'metadataRebuilt'
-          | 'unsupportedUsage'
-          | 'unsupportedBenefit'
-          | 'unsupportedIngredient'
-          | 'unsafeClaim'
-          | 'retainedProse',
-          number
-        >
-      > = {};
+      const filtering: GroundingFiltering = {};
       const supported = supportedDescription(
         description,
         extractedText,
@@ -211,6 +209,7 @@ Within description use: one # product title, a short introductory paragraph, ## 
           recognition.listedIngredients +
           recognition.recognizedIngredientAliases,
         recognition,
+        quality: descriptionCopyQuality(grounded, extractedText, citations),
         meaningful: hasMeaningfulDescription(
           grounded,
           extractedText,

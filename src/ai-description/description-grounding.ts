@@ -4,7 +4,12 @@ import {
   ingredientPercentagesSupported,
   ingredientDisplayName,
 } from './packaging-ingredients';
-import { matchingCitationText, VerifiedCitation } from './description-evidence';
+import {
+  descriptionSentences,
+  matchingCitationText,
+  VerifiedCitation,
+} from './description-evidence';
+import { supportedGeneralIngredientInformation } from './general-ingredient-information';
 import {
   packagingPurposes,
   supportedDirectionTranslation,
@@ -23,6 +28,20 @@ type Field =
   | 'directions'
   | 'benefits';
 export type PackagingFacts = Partial<Record<Field, string>>;
+export type GroundingFiltering = Partial<
+  Record<
+    | 'metadataRebuilt'
+    | 'unsupportedUsage'
+    | 'unsupportedBenefit'
+    | 'unsupportedIngredient'
+    | 'unsupportedGeneralRole'
+    | 'unsupportedFact'
+    | 'unsafeClaim'
+    | 'duplicateSentences'
+    | 'retainedProse',
+    number
+  >
+>;
 
 const fieldPatterns: Record<Field, RegExp> = {
   name: /^(?:product name|name|제품명|название продукта|наименование|mahsulot nomi)\s*[:：]\s*(.+)$/iu,
@@ -484,6 +503,8 @@ const guaranteed =
   /guarantee\p{L}*|skin whitening|whitens? (?:the )?skin|гарантир\p{L}*|осветл\p{L}* кож\p{L}*|отбел\p{L}*|kafolat\p{L}*|terini oqartir\p{L}*|반드시|기미.*완전히|피부.*하얗게/iu;
 const absoluteToneClaim =
   /(?:eliminat\p{L}*|remov\p{L}*|erase\p{L}*)[^.!?]*(?:pigment|dark.?spots)|(?:dog[’‘']|pigment)[^.!?]*(?:yo[’‘']qot|butunlay)|(?:устраня\p{L}*|избавля\p{L}*)[^.!?]*(?:пигмент|пят)|(?:잡티|기미|색소)[^.!?]*(?:완전|영구|없애)/iu;
+const medicalClaim =
+  /(?:cures?|treats?|heals?)\s+(?:acne|eczema|melasma|rosacea|dermatitis)|лечит\s+(?:акне|экзем|мелазм)|(?:akne|ekzema|melazma)[^.!?]*davola|(?:여드름|습진|피부염)[^.!?]*치료/iu;
 const stockClaims: [RegExp, RegExp][] = [
   [
     /ideal choice|идеальн\p{L}* выбор|ideal tanlov|완벽한 선택/iu,
@@ -500,6 +521,14 @@ const stockClaims: [RegExp, RegExp][] = [
   [
     /clinically proven|клинически доказан\p{L}*|klinik.*isbot|임상.*입증/iu,
     /clinically proven|клинически доказан\p{L}*|klinik.*isbot|임상.*입증/iu,
+  ],
+  [
+    /lightweight (?:formula|texture)|yengil (?:formula|tuzilish)|л[её]гк\p{L}* текстур|가벼운 제형/iu,
+    /lightweight (?:formula|texture)|yengil (?:formula|tuzilish)|л[её]гк\p{L}* текстур|가벼운 제형/iu,
+  ],
+  [
+    /suitable for (?:all|sensitive) skin|(?:barcha|sezgir) teri.*mos|подходит для (?:всех типов|чувствительной) кожи|모든 피부.*적합|민감\p{L}* 피부.*적합/iu,
+    /suitable for (?:all|sensitive) skin|(?:barcha|sezgir) teri.*mos|подходит для (?:всех типов|чувствительной) кожи|모든 피부.*적합|민감\p{L}* 피부.*적합/iu,
   ],
 ];
 
@@ -525,17 +554,7 @@ export function groundDescription(
   source: string,
   language: Language,
   citations: VerifiedCitation[] = [],
-  filtering?: Partial<
-    Record<
-      | 'metadataRebuilt'
-      | 'unsupportedUsage'
-      | 'unsupportedBenefit'
-      | 'unsupportedIngredient'
-      | 'unsafeClaim'
-      | 'retainedProse',
-      number
-    >
-  >,
+  filtering?: GroundingFiltering,
 ): string {
   const facts = extractPackagingFacts(source);
   const recognizedTitle = verifiedProductTitle(description, source, facts);
@@ -544,15 +563,7 @@ export function groundDescription(
     `${recognizedTitle ?? ''}\n${facts.benefits ?? ''}`,
   );
   const hasBenefits = Boolean(facts.benefits || sourcePurposes.length);
-  const count = (
-    reason:
-      | 'metadataRebuilt'
-      | 'unsupportedUsage'
-      | 'unsupportedBenefit'
-      | 'unsupportedIngredient'
-      | 'unsafeClaim'
-      | 'retainedProse',
-  ) => {
+  const count = (reason: keyof GroundingFiltering) => {
     if (filtering) filtering[reason] = (filtering[reason] ?? 0) + 1;
   };
   const lines: string[] = [];
@@ -565,194 +576,262 @@ export function groundDescription(
     Boolean(facts.name) ||
     source.split(/\r?\n/).filter((line) => fieldPatterns.name.test(line.trim()))
       .length <= 1;
-  for (const [index, raw] of description.split(/\r?\n/).entries()) {
-    const line = raw.trim();
-    const heading = section(line);
-    if (heading) mode = heading;
-    if (
-      mode === 'information' ||
-      (mode === 'usage' && !facts.directions) ||
-      (mode === 'benefits' && !hasBenefits)
-    ) {
-      count(
-        mode === 'information'
-          ? 'metadataRebuilt'
-          : mode === 'usage'
-            ? 'unsupportedUsage'
-            : 'unsupportedBenefit',
-      );
-      continue;
-    }
-    if (
-      /^#\s/.test(line) ||
-      (index === 0 && line && sourceContainsTitle(plain(line)))
-    ) {
+  for (const [index, paragraph] of description.split(/\r?\n/).entries()) {
+    const currentSection = section(paragraph) ?? mode;
+    // Preserve connected introductions while evaluating each sentence. Usage
+    // and general-role paragraphs stay indivisible so qualifiers/restrictions
+    // cannot be dropped while retaining the claim they qualify.
+    const parts =
+      !section(paragraph) &&
+      !/^\s*(?:#|[-*•])/u.test(paragraph) &&
+      !sourceInstructionLine(plain(paragraph)) &&
+      currentSection !== 'usage' &&
+      currentSection !== 'general' &&
+      currentSection !== 'information' &&
+      !(Object.keys(fieldPatterns) as Field[]).some((field) =>
+        matchField(field, plain(paragraph)),
+      )
+        ? descriptionSentences(paragraph)
+        : [paragraph];
+    const retained: string[] = [];
+    for (const raw of parts.length ? parts : ['']) {
+      const line = raw.trim();
+      const heading = section(line);
+      if (heading) mode = heading;
       if (
-        facts.name &&
-        /^#\s/.test(line) &&
-        plain(line).startsWith(`${facts.name} `) &&
-        sourceContainsTitle(plain(line))
+        mode === 'information' ||
+        (mode === 'usage' && !facts.directions) ||
+        (mode === 'benefits' && !hasBenefits)
+      ) {
+        count(
+          mode === 'information'
+            ? 'metadataRebuilt'
+            : mode === 'usage'
+              ? 'unsupportedUsage'
+              : 'unsupportedBenefit',
+        );
+        continue;
+      }
+      if (
+        /^#\s/.test(line) ||
+        (index === 0 && line && sourceContainsTitle(plain(line)))
+      ) {
+        if (
+          facts.name &&
+          /^#\s/.test(line) &&
+          plain(line).startsWith(`${facts.name} `) &&
+          sourceContainsTitle(plain(line))
+        )
+          title = plain(line);
+        if (!title && allowTitleFallback && sourceContainsTitle(plain(line)))
+          title = plain(line);
+        continue;
+      }
+      const instruction =
+        mode === 'usage' || (!heading && sourceInstructionLine(plain(line)));
+      if (instruction && !heading && line && !facts.directions) {
+        count('unsupportedUsage');
+        continue;
+      }
+      // Exact source instructions remain valid; translations additionally require
+      // validated citations and source-supported action/modifier constraints.
+      if (
+        instruction &&
+        !heading &&
+        line &&
+        !facts.directions?.includes(plain(line)) &&
+        !supportedDirectionTranslation(
+          plain(line),
+          facts.directions ?? '',
+          citations
+            .filter(
+              (item) =>
+                matchingCitationText(item.text) === matchingCitationText(line),
+            )
+            .flatMap((item) => item.quotes),
+        )
+      ) {
+        count('unsupportedUsage');
+        continue;
+      }
+      // Generated metadata is never used as evidence, even outside its section.
+      if (
+        (Object.keys(fieldPatterns) as Field[]).some((field) =>
+          matchField(field, plain(line)),
+        ) ||
+        /(?:made in|manufactured in|produced in|country of manufacture|страна производства|произведено в|ishlab chiqarilgan mamlakat|제조국)/iu.test(
+          line,
+        )
+      ) {
+        count('metadataRebuilt');
+        continue;
+      }
+      // Unseen acronym-like identifiers are not facts about this product. This
+      // handles arbitrary uppercase brand/model carryover, without a brand list.
+      const identifiers = line.match(/\b[A-Z][A-Z0-9-]{2,}\b/g) ?? [];
+      if (
+        identifiers.some(
+          (identifier: string) =>
+            identifier !== 'INCI' &&
+            !source.toUpperCase().includes(identifier) &&
+            !inventory.some((item) =>
+              item.aliases.some((alias) => alias.toUpperCase() === identifier),
+            ),
+        )
       )
-        title = plain(line);
-      if (!title && allowTitleFallback && sourceContainsTitle(plain(line)))
-        title = plain(line);
-      continue;
-    }
-    // Exact source instructions remain valid; translations additionally require
-    // validated citations and source-supported action/modifier constraints.
-    if (
-      mode === 'usage' &&
-      !heading &&
-      line &&
-      !facts.directions?.includes(plain(line)) &&
-      !supportedDirectionTranslation(
-        plain(line),
-        facts.directions ?? '',
-        citations
-          .filter(
-            (item) =>
-              matchingCitationText(item.text) === matchingCitationText(line),
+        continue;
+      // Model identifiers/ratings are independent source facts, not quantities or
+      // concentrations inferred from the category (for example, SPF 50 vs SPF 100).
+      const ratingPattern = /\b[A-Z]{2,6}\s*\d+(?:[.,]\d+)?\b|\bPA\+{1,4}/g;
+      const sourceRatings = new Set(
+        (source.match(ratingPattern) ?? []).map((value) =>
+          value.replace(/\s/g, ''),
+        ),
+      );
+      if (
+        [...line.matchAll(ratingPattern)].some(
+          (match) => !sourceRatings.has(match[0].replace(/\s/g, '')),
+        )
+      )
+        continue;
+      const claimText = line.replace(
+        /does not guarantee|not guaranteed|не гарантирует|kafolatlamaydi|보장하지 않습니다/giu,
+        '',
+      );
+      if (
+        !heading &&
+        !ingredientMentionsSupported(line, inventory, /^\s*[-*•]/u.test(line))
+      ) {
+        count('unsupportedIngredient');
+        continue;
+      }
+      if (!heading && line && mode === 'general') {
+        const allLines = description.split(/\r?\n/);
+        let start = index;
+        while (start > 0 && !section(allLines[start - 1])) start--;
+        let end = index + 1;
+        while (end < allLines.length && !section(allLines[end])) end++;
+        if (
+          !supportedGeneralIngredientInformation(
+            line,
+            inventory,
+            allLines.slice(start, end).join('\n'),
           )
-          .flatMap((item) => item.quotes),
+        ) {
+          count('unsupportedGeneralRole');
+          continue;
+        }
+      }
+      if (
+        !ingredientPercentagesSupported(line, inventory) ||
+        guaranteed.test(claimText) ||
+        absoluteToneClaim.test(claimText) ||
+        medicalClaim.test(claimText)
+      ) {
+        count('unsafeClaim');
+        continue;
+      }
+      const quantities: string[] =
+        line.match(
+          /\d+(?:[.,]\d+)?\s*(?:ml|мл|mL|fl\.\s*oz\.?|g|г)(?!\p{L})/giu,
+        ) ?? [];
+      const quantitySource = instruction ? facts.directions : facts.volume;
+      if (
+        quantities.some(
+          (value) =>
+            !quantitySource ||
+            !quantitySource
+              .replace(/\s/g, '')
+              .toLowerCase()
+              .includes(value.replace(/\s/g, '').toLowerCase()),
+        )
+      ) {
+        count('unsupportedFact');
+        continue;
+      }
+      if (
+        !hasBenefits &&
+        mode !== 'general' &&
+        /reduce.*(?:spots|pigment)|pigment.*kamay|dog[’‘']lar.*kamay|teri(?:ning)? tonusin|уменьш\p{L}*.*(?:пят|пигмент)|осветляющ\p{L}* свойств|борьбе с пигментац|기미.*(?:줄|개선)/iu.test(
+          line,
+        )
+      ) {
+        count('unsupportedBenefit');
+        continue;
+      }
+      if (
+        !heading &&
+        mode !== 'general' &&
+        !instruction &&
+        packagingPurposes(line).some((purpose) => {
+          const quotes = citations
+            .filter((item) =>
+              [line, paragraph].some(
+                (text) =>
+                  matchingCitationText(item.text) ===
+                  matchingCitationText(text),
+              ),
+            )
+            .flatMap((item) => item.quotes);
+          return (
+            !sourcePurposes.includes(purpose) ||
+            (quotes.length > 0 &&
+              !packagingPurposes(quotes.join('\n')).includes(purpose))
+          );
+        })
+      ) {
+        count('unsupportedBenefit');
+        continue;
+      }
+      if (
+        stockClaims.some(
+          ([claim, evidence], index) =>
+            claim.test(line) &&
+            !evidence.test(source) &&
+            !(instruction && index === 2),
+        )
+      ) {
+        count('unsafeClaim');
+        continue;
+      }
+      if (
+        line &&
+        /\b(?:manufacturer|distributor|importer)\b|производител\p{L}*|дистрибьютор\p{L}*|ответственн\p{L}* продавец|tashuvchi|ishlab chiqaruvchi|제조업자|책임판매업자/iu.test(
+          line,
+        )
       )
-    ) {
-      count('unsupportedUsage');
-      continue;
+        continue;
+      const protectedLine = recognizedTitle
+        ? line.split(recognizedTitle).join('\u0000')
+        : line;
+      const normalized = normalizeTerminology(protectedLine, language)
+        .split('\u0000')
+        .join(recognizedTitle ?? '');
+      if (heading || !normalized) {
+        retained.push(normalized);
+        continue;
+      }
+      const prefix = normalized.match(/^(?:[-*•]|\d+[.)])\s+/)?.[0] ?? '';
+      const sentences = normalized
+        .slice(prefix.length)
+        .split(/(?<=[.!?。])\s+(?=[^\d])/u)
+        .filter((sentence) => {
+          const signature = plain(sentence)
+            .toLocaleLowerCase()
+            .replace(/[\p{P}\s]+/gu, '');
+          if (signature && seen.has(signature)) {
+            count('duplicateSentences');
+            return false;
+          }
+          if (signature) seen.add(signature);
+          return true;
+        });
+      if (sentences.length) {
+        retained.push(prefix + sentences.join(' '));
+        count('retainedProse');
+      }
     }
-    // Generated metadata is never used as evidence, even outside its section.
-    if (
-      (Object.keys(fieldPatterns) as Field[]).some((field) =>
-        matchField(field, plain(line)),
-      ) ||
-      /(?:made in|manufactured in|produced in|country of manufacture|страна производства|произведено в|ishlab chiqarilgan mamlakat|제조국)/iu.test(
-        line,
-      )
-    )
-      continue;
-    // Unseen acronym-like identifiers are not facts about this product. This
-    // handles arbitrary uppercase brand/model carryover, without a brand list.
-    const identifiers = line.match(/\b[A-Z][A-Z0-9-]{2,}\b/g) ?? [];
-    if (
-      identifiers.some(
-        (identifier: string) =>
-          identifier !== 'INCI' &&
-          !source.toUpperCase().includes(identifier) &&
-          !inventory.some((item) =>
-            item.aliases.some((alias) => alias.toUpperCase() === identifier),
-          ),
-      )
-    )
-      continue;
-    // Model identifiers/ratings are independent source facts, not quantities or
-    // concentrations inferred from the category (for example, SPF 50 vs SPF 100).
-    const ratingPattern = /\b[A-Z]{2,6}\s*\d+(?:[.,]\d+)?\b|\bPA\+{1,4}/g;
-    const sourceRatings = new Set(
-      (source.match(ratingPattern) ?? []).map((value) =>
-        value.replace(/\s/g, ''),
-      ),
-    );
-    if (
-      [...line.matchAll(ratingPattern)].some(
-        (match) => !sourceRatings.has(match[0].replace(/\s/g, '')),
-      )
-    )
-      continue;
-    const claimText = line.replace(
-      /does not guarantee|not guaranteed|не гарантирует|kafolatlamaydi|보장하지 않습니다/giu,
-      '',
-    );
-    if (
-      !heading &&
-      !ingredientMentionsSupported(line, inventory, /^\s*[-*•]/u.test(line))
-    ) {
-      count('unsupportedIngredient');
-      continue;
-    }
-    if (
-      !ingredientPercentagesSupported(line, inventory) ||
-      guaranteed.test(claimText) ||
-      absoluteToneClaim.test(claimText)
-    ) {
-      count('unsafeClaim');
-      continue;
-    }
-    const quantities: string[] =
-      line.match(
-        /\d+(?:[.,]\d+)?\s*(?:ml|мл|mL|fl\.\s*oz\.?|g|г)(?!\p{L})/giu,
-      ) ?? [];
-    const quantitySource = mode === 'usage' ? facts.directions : facts.volume;
-    if (
-      quantities.some(
-        (value) =>
-          !quantitySource ||
-          !quantitySource
-            .replace(/\s/g, '')
-            .toLowerCase()
-            .includes(value.replace(/\s/g, '').toLowerCase()),
-      )
-    )
-      continue;
-    if (
-      !hasBenefits &&
-      mode !== 'general' &&
-      /reduce.*(?:spots|pigment)|pigment.*kamay|dog[’‘']lar.*kamay|teri(?:ning)? tonusin|уменьш\p{L}*.*(?:пят|пигмент)|осветляющ\p{L}* свойств|борьбе с пигментац|기미.*(?:줄|개선)/iu.test(
-        line,
-      )
-    )
-      continue;
-    if (
-      !heading &&
-      mode !== 'general' &&
-      mode !== 'usage' &&
-      packagingPurposes(line).some(
-        (purpose) => !sourcePurposes.includes(purpose),
-      )
-    ) {
-      count('unsupportedBenefit');
-      continue;
-    }
-    if (
-      stockClaims.some(
-        ([claim, evidence], index) =>
-          claim.test(line) &&
-          !evidence.test(source) &&
-          !(mode === 'usage' && index === 2),
-      )
-    )
-      continue;
-    if (
-      line &&
-      /\b(?:manufacturer|distributor|importer)\b|производител\p{L}*|дистрибьютор\p{L}*|ответственн\p{L}* продавец|tashuvchi|ishlab chiqaruvchi|제조업자|책임판매업자/iu.test(
-        line,
-      )
-    )
-      continue;
-    const protectedLine = recognizedTitle
-      ? line.split(recognizedTitle).join('\u0000')
-      : line;
-    const normalized = normalizeTerminology(protectedLine, language)
-      .split('\u0000')
-      .join(recognizedTitle ?? '');
-    if (heading || !normalized) {
-      lines.push(normalized);
-      continue;
-    }
-    const prefix = normalized.match(/^(?:[-*•]|\d+[.)])\s+/)?.[0] ?? '';
-    const sentences = normalized
-      .slice(prefix.length)
-      .split(/(?<=[.!?。])\s+(?=[^\d])/u)
-      .filter((sentence) => {
-        const signature = plain(sentence)
-          .toLocaleLowerCase()
-          .replace(/[\p{P}\s]+/gu, '');
-        if (signature && seen.has(signature)) return false;
-        if (signature) seen.add(signature);
-        return true;
-      });
-    if (sentences.length) {
-      lines.push(prefix + sentences.join(' '));
-      count('retainedProse');
-    }
+    if (retained.length) lines.push(retained.join(' '));
   }
   // Drop empty sections left behind by rejected claims.
   const body = lines

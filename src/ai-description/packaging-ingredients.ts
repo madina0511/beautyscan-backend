@@ -7,6 +7,7 @@ const terminology = [
     'ниацинамид',
     'ниацинамида',
     'ниацинамидом',
+    'ниацинамиде',
     '나이아신아마이드',
   ],
   [
@@ -20,8 +21,16 @@ const terminology = [
     '트라넥사믹애씨드',
     '트라넥삼산',
   ],
-  ['glycerin', 'glycerol', 'glitserin', 'глицерин', 'глицерина', '글리세린'],
-  ['panthenol', 'pantenol', 'пантенол', 'пантенола', '판테놀'],
+  [
+    'glycerin',
+    'glycerol',
+    'glitserin',
+    'глицерин',
+    'глицерина',
+    'глицерином',
+    '글리세린',
+  ],
+  ['panthenol', 'pantenol', 'пантенол', 'пантенола', 'пантенолом', '판테놀'],
   ['retinol', 'ретинол', 'ретинола', '레티놀'],
   [
     'salicylic acid',
@@ -222,11 +231,25 @@ export function extractPackagingIngredients(
   return ingredients;
 }
 
+function grammaticalSuffix(name: string): string {
+  if (/[가-힣]/u.test(name)) return '(?:은|는|이|가|을|를|과|와|의|으로|로)?';
+  if (
+    /^(?:niatsinamid|glitserin|pantenol|retinol|traneksamik kislota|tranexamik kislota)$/iu.test(
+      name,
+    )
+  )
+    return '(?:ning|ni|ga|dan)?';
+  return '';
+}
+
 function containsName(text: string, name: string): boolean {
-  return new RegExp(
-    `(?:^|[^\\p{L}\\p{N}])${escape(name)}(?:$|[^\\p{L}\\p{N}])`,
-    'iu',
-  ).test(text);
+  // Korean particles and Uzbek case endings do not introduce a new ingredient.
+  // Recognize only complete names plus a bounded grammatical suffix, never an
+  // arbitrary substring (e.g. retinol is not retinyl palmitate).
+  const suffix = `${grammaticalSuffix(name)}(?=$|[^\\p{L}\\p{N}])`;
+  return new RegExp(`(?:^|[^\\p{L}\\p{N}])${escape(name)}${suffix}`, 'iu').test(
+    text,
+  );
 }
 export function ingredientReferenceSupported(
   name: string,
@@ -234,6 +257,14 @@ export function ingredientReferenceSupported(
 ): boolean {
   return inventory.some((item) =>
     item.aliases.some((alias) => identity(alias) === identity(name)),
+  );
+}
+export function mentionedPackagingIngredients(
+  line: string,
+  inventory: PackagingIngredient[],
+): PackagingIngredient[] {
+  return inventory.filter((item) =>
+    item.aliases.some((alias) => containsName(line, alias)),
   );
 }
 export function ingredientMentionsSupported(
@@ -274,11 +305,11 @@ export function ingredientPercentagesSupported(
         item.aliases.some(
           (alias) =>
             new RegExp(
-              `(?:^|[^\\p{L}\\p{N}])${escape(alias)}\\s*[:：(-]?\\s*$`,
+              `(?:^|[^\\p{L}\\p{N}])${escape(alias)}${grammaticalSuffix(alias)}\\s*[:：(-]?\\s*$`,
               'iu',
             ).test(left) ||
             new RegExp(
-              `^\\s*[:：)-]?\\s*${escape(alias)}(?:$|[^\\p{L}\\p{N}])`,
+              `^\\s*[:：)-]?\\s*${escape(alias)}${grammaticalSuffix(alias)}(?:$|[^\\p{L}\\p{N}])`,
               'iu',
             ).test(right),
         ),
